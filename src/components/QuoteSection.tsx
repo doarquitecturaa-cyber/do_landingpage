@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { PHONE_NUMBER, EMAIL_ADDRESS, LOCATION_CITY, getWhatsAppUrl } from '../data/content';
-import { Send, MessageCircle, Phone, Mail, MapPin, CheckCircle2, ShieldCheck } from 'lucide-react';
+import { Send, MessageCircle, Phone, Mail, MapPin, CheckCircle2, ShieldCheck, Paperclip, AlertCircle } from 'lucide-react';
+import { supabase } from '../lib/supabaseClient';
 
 interface QuoteSectionProps {
   prefilledComponent?: string;
@@ -17,7 +18,10 @@ export const QuoteSection: React.FC<QuoteSectionProps> = ({ prefilledComponent }
   const [tipoSistema, setTipoSistema] = useState('KIT FULL integral');
   const [dudas, setDudas] = useState('');
   const [comentarios, setComentarios] = useState(prefilledComponent ? `Consulta sobre: ${prefilledComponent}` : '');
+  const [planoFile, setPlanoFile] = useState<File | null>(null);
   const [enviado, setEnviado] = useState(false);
+  const [enviando, setEnviando] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   // El formulario queda montado una sola vez; sin esto, elegir "Consultar por
   // este componente →" en el KIT no actualizaba el campo tras el primer render.
@@ -27,12 +31,63 @@ export const QuoteSection: React.FC<QuoteSectionProps> = ({ prefilledComponent }
     }
   }, [prefilledComponent]);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const MAX_FILE_MB = 20;
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0] ?? null;
+    if (file && file.size > MAX_FILE_MB * 1024 * 1024) {
+      setError(`El archivo pesa más de ${MAX_FILE_MB} MB. Subí un plano más liviano o mandalo directo por WhatsApp.`);
+      e.target.value = '';
+      setPlanoFile(null);
+      return;
+    }
+    setError(null);
+    setPlanoFile(file);
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    // Antes esto solo mostraba "éxito" sin mandar el dato a ningún lado.
-    // Ahora el botón principal dispara el WhatsApp de verdad.
-    handleWhatsAppDirect();
-    setEnviado(true);
+    setError(null);
+    setEnviando(true);
+
+    try {
+      // 1. Si hay un plano adjunto, lo subimos primero al bucket de Supabase.
+      let planoPath: string | null = null;
+      if (planoFile) {
+        const safeName = planoFile.name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
+        const filePath = `${Date.now()}-${safeName}`;
+        const { error: uploadError } = await supabase.storage
+          .from('planos-landing')
+          .upload(filePath, planoFile);
+        if (uploadError) throw uploadError;
+        planoPath = filePath;
+      }
+
+      // 2. Guardamos los datos del lead en la tabla, con la referencia al plano si lo hay.
+      const { error: insertError } = await supabase.from('leads_landing').insert({
+        nombre,
+        perfil,
+        telefono,
+        email,
+        localidad,
+        superficie,
+        estado_proyecto: estadoProyecto,
+        tipo_sistema: tipoSistema,
+        dudas,
+        comentarios,
+        plano_url: planoPath,
+      });
+      if (insertError) throw insertError;
+
+      // 3. Recién con el dato ya guardado, abrimos WhatsApp como aviso inmediato.
+      handleWhatsAppDirect();
+      setEnviado(true);
+    } catch (err) {
+      console.error('Error al guardar el lead:', err);
+      setError('No pudimos guardar tu consulta por un problema técnico. Probá de nuevo en unos segundos, o escribinos directo por WhatsApp con el botón de abajo.');
+    } finally {
+      setEnviando(false);
+    }
   };
 
   const handleWhatsAppDirect = () => {
@@ -254,12 +309,40 @@ export const QuoteSection: React.FC<QuoteSectionProps> = ({ prefilledComponent }
                   ></textarea>
                 </div>
 
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1.5">
+                    ADJUNTAR PLANO O CROQUIS <span className="font-normal normal-case text-slate-400">(opcional, PDF/DWG/JPG/PNG, máx. {MAX_FILE_MB}MB)</span>
+                  </label>
+                  <label
+                    htmlFor="plano-file-input"
+                    className="flex items-center gap-2.5 w-full px-3.5 py-2.5 rounded-lg border border-dashed border-slate-300 text-sm text-slate-500 cursor-pointer hover:border-[#0A2730] hover:text-[#0A2730] transition-colors"
+                  >
+                    <Paperclip className="w-4 h-4 shrink-0" />
+                    <span className="truncate">{planoFile ? planoFile.name : 'Elegir archivo...'}</span>
+                  </label>
+                  <input
+                    id="plano-file-input"
+                    type="file"
+                    accept=".pdf,.dwg,.dxf,.skp,.jpg,.jpeg,.png"
+                    onChange={handleFileChange}
+                    className="hidden"
+                  />
+                </div>
+
+                {error && (
+                  <div className="flex items-start gap-2 px-3.5 py-2.5 rounded-lg bg-red-50 border border-red-200 text-xs sm:text-sm text-red-700">
+                    <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                    <span>{error}</span>
+                  </div>
+                )}
+
                 <div className="pt-2 flex flex-col sm:flex-row gap-3">
                   <button
                     type="submit"
-                    className="flex-1 py-3.5 px-6 rounded-lg bg-[#0A2730] hover:bg-[#123A46] text-white font-bold text-sm transition-colors cursor-pointer flex items-center justify-center gap-2"
+                    disabled={enviando}
+                    className="flex-1 py-3.5 px-6 rounded-lg bg-[#0A2730] hover:bg-[#123A46] disabled:opacity-60 disabled:cursor-not-allowed text-white font-bold text-sm transition-colors cursor-pointer flex items-center justify-center gap-2"
                   >
-                    <span>Enviar Ficha de Proyecto</span>
+                    <span>{enviando ? 'Guardando...' : 'Enviar Ficha de Proyecto'}</span>
                     <Send className="w-4 h-4" />
                   </button>
 
