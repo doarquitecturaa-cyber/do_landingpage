@@ -79,7 +79,26 @@ export const QuoteSection: React.FC<QuoteSectionProps> = ({ prefilledComponent }
       });
       if (insertError) throw insertError;
 
-      // 3. Recién con el dato ya guardado, abrimos WhatsApp como aviso inmediato.
+      // 3. Notificación push inmediata a tu celular — no depende de que el
+      // cliente confirme el WhatsApp. Si falla, no interrumpe el flujo.
+      try {
+        const ntfyTopic = import.meta.env.VITE_NTFY_TOPIC as string | undefined;
+        if (ntfyTopic) {
+          await fetch(`https://ntfy.sh/${ntfyTopic}`, {
+            method: 'POST',
+            headers: {
+              'Title': 'Nuevo lead - Landing DO',
+              'Priority': 'high',
+              'Tags': 'bust_in_silhouette',
+            },
+            body: `${nombre} (${perfil}) · ${telefono} · ${localidad} · ${superficie}m² · ${tipoSistema}${planoPath ? ' · con plano adjunto' : ''}`,
+          });
+        }
+      } catch (ntfyError) {
+        console.error('No se pudo enviar la notificación push:', ntfyError);
+      }
+
+      // 4. Abrimos WhatsApp como aviso adicional (solo si el cliente confirma el envío).
       handleWhatsAppDirect();
       setEnviado(true);
     } catch (err) {
